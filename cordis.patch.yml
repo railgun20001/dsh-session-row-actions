@@ -1,0 +1,8 @@
+# dsh-session-row-actions —— bundle patch
+#
+# 只挂一行：宿主半（index.js）不做任何事，全部行为在客户端半（client.js）。
+# 客户端半的模块图顺序由 package.json 的 dsh.client.inject 声明（那里写包名），
+# 这里不需要重复。
+- insert:
+    - id: session-row-actions
+      name: dsh-session-row-actions

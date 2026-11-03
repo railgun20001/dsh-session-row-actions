@@ -1,0 +1,72 @@
+{
+  "name": "dsh-session-row-actions",
+  "version": "0.5.1",
+  "type": "module",
+  "description": "会话行悬浮按钮：把侧栏会话行尾那排按钮换成可配置的一排（官方「…」菜单里的动作可勾选成悬浮按钮并拖动排序），右键打开官方菜单，「置顶会话」换成「分叉会话」。配置在 插件管理 → 本插件详情页。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek-harness-plugin",
+    "cordis",
+    "session",
+    "sidebar",
+    "session-actions",
+    "context-menu",
+    "hover-buttons"
+  ],
+  "homepage": "https://github.com/railgun20001/dsh-session-row-actions#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/railgun20001/dsh-session-row-actions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/railgun20001/dsh-session-row-actions/issues"
+  },
+  "author": "railgun20001",
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "test/client-half-test.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    },
+    "manifestVersion": 1
+  },
+  "scripts": {
+    "test": "node test/client-half-test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
+}

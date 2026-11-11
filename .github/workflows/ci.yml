@@ -1,0 +1,32 @@
+# 持续集成：client.js 的单元自检（工厂 / 行插槽 / 固定「更多」/ 两个列表独立排序 /
+# 勾选 / 权限判断 / v3、v2、v1 偏好迁移）。
+#
+# 为什么跨平台跑：这个插件是纯客户端 bundle（无 native 模块、无 shell / PowerShell 调用），
+# 在 ubuntu 与 windows 上各跑一遍就能同时覆盖路径分隔符差异，成本也不高。
+# 无依赖需要安装：零运行时依赖、零开发依赖，测试只用 node:test 与自制 React 桩。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: 安装 Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: 单元测试
+        run: npm test

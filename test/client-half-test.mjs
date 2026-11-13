@@ -1,4 +1,4 @@
-// 自检：用桩跑通 client.js 的工厂、插槽注册、配置区块（两个可拖拽列表）与按钮渲染。
+// 自检：用桩跑通 client.js 的工厂、插槽注册、配置区块（可拖动悬浮列表 + 固定菜单列表）与按钮渲染。
 // 运行：node test/client-half-test.mjs（或 npm test）
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,8 +13,8 @@ const PREFS_KEY = 'dsh-session-row-actions/prefs-v4'
 const LEGACY_V3_KEY = 'dsh-session-row-actions/prefs-v3'
 const LEGACY_V2_KEY = 'dsh-session-row-actions/prefs-v2'
 const LEGACY_KEY = 'dsh-session-row-actions/prefs-v1'
-/** 与 client.js 的 DEFAULT_ORDER 保持一致（用于断言 menuOrder 未被勾选动作改动）。 */
-const DEFAULT_MENU_ORDER = ['more', 'archive', 'fork', 'pin', 'rename', 'copyId']
+/** 官方菜单分组顺序：置顶 / 重命名 / 分叉 / 复制 ID / 归档（不含「更多」）。 */
+const OFFICIAL_MENU_ORDER = ['more', 'pin', 'rename', 'fork', 'copyId', 'archive']
 
 /** 极简 React 桩：createElement / useState / useEffect。 */
 function createReact() {
@@ -295,12 +295,22 @@ if (menuItems.some((item) => textOf(item).includes('action.more'))) {
 }
 if (!textOf(hoverItems[0]).includes('action.more')) throw new Error('悬浮列表第一行应为固定的「更多」')
 if (!textOf(hoverItems[1]).includes('action.archive')) throw new Error('悬浮列表第二行应为「归档」')
-if (!textOf(menuItems[1]).includes('action.fork')) throw new Error('菜单列表第 2 项应为「分叉」')
+// 「更多菜单」列表固定按官方分组顺序展示（置顶 / 重命名 / 分叉 / 复制 ID / 归档）
+const menuKeys = OFFICIAL_MENU_ORDER.filter((key) => key !== 'more').map((key) => `action.${key}`)
+const menuText = menuItems.map((item) => textOf(item))
+for (let index = 0; index < menuKeys.length; index += 1) {
+  if (!menuText[index].includes(menuKeys[index])) {
+    throw new Error(`更多菜单第 ${index + 1} 项应为 ${menuKeys[index]}，实际 ${menuText[index]}`)
+  }
+}
 
-// 「更多」那行固定：不可拖动；其余行可拖动；每行都有勾选框
+// 「更多」行与整个「更多菜单」列表都固定不可拖动；悬浮列表其余行仍可拖动；每行都有勾选框
 if (hoverItems[0].props.draggable !== false) throw new Error('「更多」行不应可拖动')
 if (hoverItems[0].props['data-fixed'] !== 'true') throw new Error('「更多」行缺少固定标记')
 if (hoverItems.slice(1).some((item) => item.props.draggable !== true)) throw new Error('悬浮列表其余行应可拖动')
+if (menuItems.some((item) => item.props.draggable !== false || item.props['data-fixed'] !== 'true' || item.props.onDrop !== undefined)) {
+  throw new Error('「更多菜单」列表应固定不可拖动，仅保留勾选')
+}
 for (const item of [...hoverItems, ...menuItems]) {
   const checkbox = item.props.children.find((child) => child && child.type === 'input')
   if (!checkbox || checkbox.props.type !== 'checkbox') throw new Error('行缺少勾选框')
@@ -319,7 +329,7 @@ if (afterCheck === null || afterCheck.moreVisible !== true) throw new Error('勾
 if (afterCheck.hoverOrder.join(',') !== 'archive,fork') {
   throw new Error(`「更多」不应进入 hoverOrder：${afterCheck?.hoverOrder?.join(',')}`)
 }
-if (afterCheck.menuOrder.join(',') !== DEFAULT_MENU_ORDER.join(',')) {
+if (afterCheck.menuOrder.join(',') !== OFFICIAL_MENU_ORDER.join(',')) {
   throw new Error('勾选不应改动 menuOrder')
 }
 
@@ -334,8 +344,7 @@ if (afterUncheck === null || afterUncheck.hoverOrder.join(',') !== 'fork') {
   throw new Error(`取消勾选「归档」后 hoverOrder 不对：${afterUncheck?.hoverOrder?.join(',')}`)
 }
 
-// ── 场景 2：两个列表顺序互不影响 ──────────────────────────────────────────
-// 菜单列表顺序与悬浮条顺序故意不一致：悬浮条只认 hoverOrder
+// ── 场景 2：用户自定义偏好里的 menuOrder 会被规整为官方分组，悬浮条只认 hoverOrder ──
 const custom = run({
   menuOrder: ['more', 'copyId', 'rename', 'pin', 'fork', 'archive'],
   hoverOrder: ['copyId', 'archive', 'pin', 'rename', 'fork'],
@@ -361,8 +370,8 @@ const customHoverItems = itemsOf(customSections[0])
 const customMenuItems = itemsOf(customSections[1])
 if (!textOf(customHoverItems[0]).includes('action.more')) throw new Error('悬浮列表第一行应固定为「更多」')
 if (!textOf(customHoverItems[1]).includes('action.copyId')) throw new Error('悬浮列表第二行应为 hoverOrder 的首项')
-// 菜单列表按 menuOrder 排，且不含「更多」→ 首项应是 menuOrder 里第一个非「更多」的动作
-if (!textOf(customMenuItems[0]).includes('action.copyId')) throw new Error('菜单列表应按 menuOrder 排序（跳过「更多」）')
+// 已保存的自定义 menuOrder 会被规整为官方分组：首项为「置顶」，且不含「更多」
+if (!textOf(customMenuItems[0]).includes('action.pin')) throw new Error('menuOrder 应被规整为官方分组（首项置顶）')
 if (customMenuItems.some((item) => textOf(item).includes('action.more'))) throw new Error('菜单列表不应包含「更多」')
 
 // ── 场景 3：v3 迁移（hoverOrder 里混着「更多」→ 抽到 moreVisible） ──────────
@@ -445,4 +454,28 @@ if (!legacyEvent.defaultPrevented || !legacy.menuCalls.some(([kind]) => kind ===
   throw new Error('旧版右键仍应由兼容桥 preventDefault 并模拟点击')
 }
 
-console.log('OK: 工厂 / 行插槽 / 新旧官方触发器隐藏 / 官方菜单服务 / 右键让位 / 固定「更多」/ 两个列表独立排序 / 勾选 / 权限 / v3、v2、v1 迁移 全部通过')
+// ── 场景 9：旧偏好里的乱序 menuOrder 一律回归官方分组 ─────────────────────
+const messy = run({ menuOrder: ['more', 'archive', 'copyId', 'fork', 'rename', 'pin'], hoverOrder: ['archive', 'fork'], moreVisible: false })
+const messyStored = JSON.parse(globalThis.window.localStorage.getItem(PREFS_KEY) ?? 'null')
+// 读取本身不会立刻回写，但渲染与后续 set 都使用规整后的数组。
+const messyConfig = flatten(messy.registered.find((entry) => entry.options.name === CONFIG_SLOT).Component({ t: (key) => key }))[0]
+const messySections = messyConfig.props.children.filter((child) => child && child.props?.className === 'sra-section')
+const messyMenu = itemsOf(messySections[1])
+if (!textOf(messyMenu[0]).includes('action.pin') || !textOf(messyMenu[4]).includes('action.archive')) {
+  throw new Error('旧偏好的 menuOrder 应被规整为官方分组（置顶…归档）')
+}
+// 勾选「重命名」后写回的 menuOrder 也必须是官方分组，而不是旧乱序。
+const renameRow = messyMenu.find((item) => textOf(item).includes('action.rename'))
+checkboxOf(renameRow).props.onChange({ target: { checked: true } })
+const messyAfter = JSON.parse(globalThis.window.localStorage.getItem(PREFS_KEY) ?? 'null')
+if (messyAfter === null || messyAfter.menuOrder.join(',') !== OFFICIAL_MENU_ORDER.join(',')) {
+  throw new Error('写入偏好时 menuOrder 应保持官方分组')
+}
+// 插入位置按官方分组：重命名(200) 比归档(600)/分叉(300) 都靠前，所以插到最前；
+// 已有项 archive,fork 的相对顺序保持不变（既有行为）。
+if (messyAfter.hoverOrder.join(',') !== 'rename,archive,fork') {
+  throw new Error(`新勾选项应按官方分组插入 hoverOrder：${messyAfter?.hoverOrder?.join(',')}`)
+}
+void messyStored
+
+console.log('OK: 工厂 / 行插槽 / 新旧官方触发器隐藏 / 官方菜单服务 / 右键让位 / 官方分组固定菜单 / 固定「更多」/ 两个列表独立排序 / 勾选 / 权限 / v3、v2、v1 迁移 全部通过')

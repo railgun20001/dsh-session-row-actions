@@ -114,10 +114,15 @@ window.__ModuleLoader__.load({
     const MORE_KEY = 'more'
 
     /**
-     * 默认顺序：先把常用的「归档」「分叉」排在前面（沿用改造前那排按钮的观感），
-     * 「更多」在最前、其余动作按官方菜单的相对次序跟在后面。
+     * 官方菜单分组顺序（`ui-workspace` 的 `ctx.contextMenus` 贡献 order）：
+     * 置顶 100 / 重命名 200 / 分叉 300 / 复制 Session ID 450 / 归档 600（footer）。
+     * 「更多菜单」列表按此固定展示、不可拖动，也不改变官方菜单本身的排列；
+     * 它同时决定新勾选项插入 `hoverOrder`（悬浮按钮条）的默认落点。
      */
-    const DEFAULT_ORDER = ['more', 'archive', 'fork', 'pin', 'rename', 'copyId']
+    const OFFICIAL_MENU_ORDER = ['more', 'pin', 'rename', 'fork', 'copyId', 'archive']
+
+    /** 默认顺序：跟随官方菜单分组，方便按分组找到想勾成悬浮按钮的动作。 */
+    const DEFAULT_ORDER = OFFICIAL_MENU_ORDER.slice()
 
     /** 默认悬浮条：只有「归档」「分叉」（「更多」默认隐藏，延续之前的观感）。 */
     const DEFAULT_HOVER = ['archive', 'fork']
@@ -138,8 +143,8 @@ window.__ModuleLoader__.load({
       'section.hover': '悬浮按钮',
       'section.hover.hint': '悬停会话行时显示的按钮；「更多」固定在最前，其余可拖动排序',
       'section.menu': '更多菜单',
-      'section.menu.hint': '勾选后加入悬浮按钮；拖动只影响这个列表，两个列表互不干扰',
-      'item.fixed': '位置固定，不可拖动',
+      'section.menu.hint': '官方菜单分组顺序（不可拖动）；勾选后加入悬浮按钮，顺序可到上面列表调整',
+      'item.fixed': '顺序固定，不可拖动',
       'item.drag': '拖动排序',
       'action.more': '更多（…）',
       'action.more.hint': '固定显示在悬浮列表最前，只可切换显隐；在会话行上点右键也能打开菜单',
@@ -162,8 +167,8 @@ window.__ModuleLoader__.load({
       'section.hover': 'Hover buttons',
       'section.hover.hint': 'Shown while hovering a session row — “More” stays first, the rest can be dragged',
       'section.menu': 'More menu',
-      'section.menu.hint': 'Tick to add to the hover buttons; dragging only affects this list — the two lists are independent',
-      'item.fixed': 'Fixed position — cannot be dragged',
+      'section.menu.hint': 'Fixed official menu groups (cannot be dragged); tick to add a hover button, then reorder it above',
+      'item.fixed': 'Fixed order — cannot be dragged',
       'item.drag': 'Drag to reorder',
       'action.more': 'More (…)',
       'action.more.hint': 'Always first in the hover list, only its visibility toggles; right-clicking a row opens the menu too',
@@ -184,20 +189,21 @@ window.__ModuleLoader__.load({
      * 建一个带订阅的偏好存储：读写 localStorage，写入后同步通知订阅者。
      *
      * 形状：`{ menuOrder: ActionKey[], hoverOrder: ActionKey[], moreVisible: boolean }`。
-     * 两个列表各自独立排序；`hoverOrder` 只存「除『更多』以外」的动作，
+     * 两个列表各自独立；`hoverOrder` 只存「除『更多』以外」的动作，
      * 「更多」的显隐单独用 `moreVisible`（它在列表里位置固定、不可移除）。
+     *
+     * `menuOrder` 固定按官方菜单分组展示、不可拖动，读取时一律规整为 OFFICIAL_MENU_ORDER。
      *
      * 读取时做一次规整（未知 key 丢弃、缺失 key 补默认），并兼容 v3 / v2 / v1 的历史形状。
      *
      * @returns 带 get / set / subscribe 的存储对象。
      */
     function createPrefs() {
-      /** 把任意数组规整成「只含已知 key、且不缺项」的顺序。 */
-      const normalizeOrder = (input) => {
-        const order = Array.isArray(input) ? input.filter((key) => ACTION_KEYS.includes(key)) : []
-        for (const key of ACTION_KEYS) if (!order.includes(key)) order.push(key)
-        return order
-      }
+      /**
+       * 「更多菜单」列表固定按官方分组展示、不可拖动：无论旧偏好存过什么顺序，
+       * 读取时都回归 OFFICIAL_MENU_ORDER；未来官方新增动作也统一从这里补齐。
+       */
+      const normalizeMenuOrder = () => OFFICIAL_MENU_ORDER.slice()
       /** 悬浮列表只接受「非『更多』」的已知 key，去重保序。 */
       const normalizeHover = (input) => {
         const list = Array.isArray(input) ? input.filter((key) => ACTION_KEYS.includes(key) && key !== MORE_KEY) : []
@@ -211,7 +217,7 @@ window.__ModuleLoader__.load({
           const parsed = JSON.parse(raw)
           if (parsed !== null && typeof parsed === 'object') {
             value = {
-              menuOrder: normalizeOrder(parsed.menuOrder),
+              menuOrder: normalizeMenuOrder(),
               hoverOrder: normalizeHover(parsed.hoverOrder),
               moreVisible: parsed.moreVisible === true,
             }
@@ -226,7 +232,7 @@ window.__ModuleLoader__.load({
             if (old !== null && typeof old === 'object') {
               const hover = Array.isArray(old.hoverOrder) ? old.hoverOrder : []
               value = {
-                menuOrder: normalizeOrder(old.menuOrder),
+                menuOrder: normalizeMenuOrder(),
                 hoverOrder: normalizeHover(hover),
                 moreVisible: hover.includes(MORE_KEY),
               }
@@ -235,7 +241,7 @@ window.__ModuleLoader__.load({
             // 迁移 v2：{ order, shown }
             const old = JSON.parse(legacyV2)
             if (old !== null && typeof old === 'object') {
-              const menuOrder = normalizeOrder(old.order)
+              const menuOrder = normalizeMenuOrder()
               const shown = old.shown !== null && typeof old.shown === 'object' ? old.shown : {}
               value = {
                 menuOrder,
@@ -251,7 +257,7 @@ window.__ModuleLoader__.load({
               if (old.showArchive === false) visible.delete('archive')
               if (old.showFork === false) visible.delete('fork')
               value = {
-                menuOrder: DEFAULT_ORDER.slice(),
+                menuOrder: normalizeMenuOrder(),
                 hoverOrder: DEFAULT_ORDER.filter((key) => key !== MORE_KEY && visible.has(key)),
                 moreVisible: old.hideMore === false,
               }
@@ -273,7 +279,8 @@ window.__ModuleLoader__.load({
       return {
         get: () => value,
         set(patch) {
-          value = { ...value, ...patch }
+          // menuOrder 是官方分组的派生值：即使调用方误传也一律回归固定顺序。
+          value = { ...value, ...patch, menuOrder: normalizeMenuOrder() }
           persist()
           for (const listener of [...listeners]) {
             try {
@@ -357,6 +364,9 @@ window.__ModuleLoader__.load({
         `.sra-grip:active{cursor:grabbing}`,
         `.sra-item[data-fixed="true"] .sra-grip{cursor:default;opacity:.7}`,
         `.sra-item[data-fixed="true"]{background:var(--dsw-alias-bg-layer-2)}`,
+        // 固定行（悬浮列表的「更多」与整个「更多菜单」列表）仍显示手柄占位，
+        // 但用小锁表示不可拖动；勾选框保持可交互。
+        `.sra-item[data-fixed="true"] .sra-check{cursor:pointer}`,
         `.sra-item-icon{display:inline-flex;align-items:center;color:var(--dsw-alias-label-secondary)}`,
         `.sra-item-label{flex:1;min-width:0;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`,
         `.sra-item-hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`,
@@ -777,13 +787,12 @@ window.__ModuleLoader__.load({
     /* ───────────────────────── 插件页配置区块 ───────────────────────── */
 
     /**
-     * 造出插件详情页里的配置区块：说明 + 「悬浮按钮」+「更多菜单」两个可拖拽列表。
+     * 造出插件详情页里的配置区块：说明 + 「悬浮按钮」（可拖动）+「更多菜单」（仅勾选）。
      *
-     * 两个列表**各自独立**排序：
-     *   - 悬浮列表 = `hoverOrder`（顺序即悬浮条顺序，同时就是「显示哪些」的集合）；
-     *   - 菜单列表 = `menuOrder`（全量动作的目录顺序，只决定这份目录自身怎么排）。
-     * 拖动其中一个不会影响另一个；勾选时按 `menuOrder` 的相对位置把动作插进
-     * `hoverOrder`，因此菜单列表的顺序决定了新勾选项的默认落点。
+     * 「悬浮按钮」列表 = `hoverOrder`，顺序即悬浮条顺序，也能拖动重排；
+     * 「更多菜单」列表固定按官方菜单分组（OFFICIAL_MENU_ORDER）展示，不可拖动，
+     * 只提供勾选框；勾选时按该固定顺序把动作插进 `hoverOrder`，因此它决定
+     * 新勾选项落在悬浮条的默认位置，之后可以在上面的列表里再拖。
      *
      * @param prefs - 偏好存储。
      * @returns 配置区块组件（收到 `{ t }`）。
@@ -811,23 +820,10 @@ window.__ModuleLoader__.load({
         }
 
         /**
-         * 重排菜单列表（只动 `menuOrder`）。
-         *
-         * @param from - 拖动项下标。
-         * @param to - 落点下标。
-         */
-        const moveInMenu = (from, to) => {
-          const next = snapshot.menuOrder.slice()
-          const [moved] = next.splice(from, 1)
-          next.splice(to, 0, moved)
-          prefs.set({ menuOrder: next })
-        }
-
-        /**
          * 勾选 / 取消勾选一个动作是否加入悬浮条。
          *
          * 「更多」位置固定、不可移除，勾选状态对应 `moreVisible`；其余动作写 `hoverOrder`，
-         * 加入时按 `menuOrder` 的相对次序插入，所以菜单列表的顺序决定新项落在哪。
+         * 加入时按固定的官方分组次序插入，所以「更多菜单」列表决定新项落在哪。
          *
          * @param key - 动作 key。
          * @param next - 勾选后的状态。
@@ -861,7 +857,7 @@ window.__ModuleLoader__.load({
          * @param key - 动作 key。
          * @param index - 在当前列表里的下标。
          * @param variant - `hover` 或 `menu`。
-         * @param fixed - 是否「固定行」（悬浮列表里的「更多」：不可拖动、不可移除）。
+         * @param fixed - 是否「固定行」：不可拖动（悬浮列表的「更多」与整个菜单列表）。
          * @returns 行元素。
          */
         const renderItem = (key, index, variant, fixed = false) => {
@@ -910,9 +906,8 @@ window.__ModuleLoader__.load({
                 ? undefined
                 : (event) => {
                     event.preventDefault()
-                    if (dragFrom !== null && dragFrom.variant === variant && dragFrom.index !== index) {
-                      if (variant === 'hover') moveInHover(dragFrom.index, index)
-                      else moveInMenu(dragFrom.index, index)
+                    if (dragFrom !== null && dragFrom.variant === 'hover' && dragFrom.index !== index) {
+                      moveInHover(dragFrom.index, index)
                     }
                     setDragFrom(null)
                     setDragOver(null)
@@ -978,10 +973,11 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'sra-list' },
-              // 「更多」是悬浮列表的固定行，按用户要求不在这个列表里重复出现
+              // 「更多菜单」固定按官方分组展示、不可拖动，仅提供勾选；
+              // 「更多」是悬浮列表的固定行，按用户要求不在这个列表里重复出现。
               ...snapshot.menuOrder
                 .filter((key) => key !== MORE_KEY)
-                .map((key) => renderItem(key, snapshot.menuOrder.indexOf(key), 'menu')),
+                .map((key) => renderItem(key, snapshot.menuOrder.indexOf(key), 'menu', true)),
             ),
           ),
         )

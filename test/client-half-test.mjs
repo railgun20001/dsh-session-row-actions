@@ -36,11 +36,14 @@ function createReact() {
  * 跑一遍 client.js。
  *
  * @param stored - 预置到 localStorage 的偏好（v2 或 v1）。
- * @returns 采集到的调用、注册项与样式文本。
+ * @param options - 可注入的运行时桩（新版 contextMenus、旧版/新版 DOM、事件监听）。
+ * @returns 采集到的调用、注册项、样式文本、服务调用与事件记录。
  */
-function run(stored) {
+function run(stored, options = {}) {
   const calls = []
   const styleTags = []
+  const menuCalls = []
+  const listeners = new Map()
   const storage = new Map()
   if (stored !== undefined) {
     if (stored.legacy) storage.set(LEGACY_KEY, JSON.stringify(stored.legacy))
@@ -49,6 +52,20 @@ function run(stored) {
     else storage.set(PREFS_KEY, JSON.stringify(stored))
   }
 
+  const menus = options.contextMenus === false
+    ? undefined
+    : {
+        open: (target, point) => menuCalls.push(['open', target, point]),
+        resolve: (target) => {
+          menuCalls.push(['resolve', target])
+          return {
+            source: { getSnapshot: () => [{ id: 'session.rename/rename' }, { id: 'session.archive/archive' }] },
+            ready: Promise.resolve(),
+            select: (id) => menuCalls.push(['select', id]),
+            dispose: () => menuCalls.push(['dispose']),
+          }
+        },
+      }
   const fakeCtx = {
     effect(callback, label) {
       calls.push(['effect', label])
@@ -71,18 +88,70 @@ function run(stored) {
         return () => {}
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'contextMenus' ? menus : undefined),
   }
+
+  /** 新版官方触发器：带 data-context-menu-trigger；旧版触发器：普通 button。 */
+  const officialTrigger = {
+    matches(selector) {
+      return options.newDom === true && selector === '[data-context-menu-trigger]'
+    },
+    click: () => menuCalls.push(['trigger.click']),
+    getBoundingClientRect: () => ({ left: 321, bottom: 654 }),
+    getAttribute: () => '',
+  }
+  /** 会话行 DOM 桩：新版触发器是直接子按钮，旧版触发器包在 span 里。 */
+  const row = {
+    querySelectorAll: () => [],
+    querySelector(selector) {
+      if (selector === '[class*="rowActions"]') return strip
+      if (selector === '[data-slot="sidebar.workspaces.session.row.action"]') return slotBox
+      return null
+    },
+    closest: () => row,
+  }
+  const slotBox = { querySelectorAll: () => [] }
+  const strip = {
+    querySelector(selector) {
+      if (selector === '[data-slot="sidebar.workspaces.session.row.action"]') return slotBox
+      if (selector === ':scope > [data-context-menu-trigger]:not([data-sra])') return options.newDom === true ? officialTrigger : null
+      if (selector === ':scope > span > button:not([data-sra])') return officialTrigger
+      return null
+    },
+  }
+
+  /** 本插件「更多」按钮的 DOM 桩：只提供菜单锚点所需几何与所在行。 */
+  const ownButton = {
+    closest: () => row,
+    getBoundingClientRect: () => ({ left: 123, bottom: 456 }),
+  }
+  /** 右键事件的 target 桩：会话行上的任意元素。 */
+  const rowTarget = { closest: () => row }
+  /** Element / HTMLButtonElement 宿主全局：右键桥与触发器识别需要实例判定。 */
+  const ElementClass = class Element {}
+  const ButtonClass = class HTMLButtonElement {}
+  /** 把按钮点击产生的 Promise 排空，便于同步断言服务调用。 */
+  const flush = () => new Promise((resolve) => setImmediate(resolve))
+  // 右键桥从事件目标找会话行，再从行里找触发器；Element 是宿主全局构造函数。
+  Object.setPrototypeOf(rowTarget, ElementClass.prototype)
+  Object.setPrototypeOf(officialTrigger, ButtonClass.prototype)
+  Object.defineProperty(officialTrigger, 'matches', {
+    value: (selector) => options.newDom === true && selector === '[data-context-menu-trigger]',
+  })
 
   globalThis.window = {
     localStorage: {
       getItem: (key) => (storage.has(key) ? storage.get(key) : null),
       setItem: (key, value) => storage.set(key, value),
     },
-    addEventListener: (type) => calls.push(['window.addEventListener', type]),
+    addEventListener: (type, listener) => {
+      calls.push(['window.addEventListener', type])
+      listeners.set(type, listener)
+    },
     removeEventListener: () => {},
     innerWidth: 1500,
     innerHeight: 900,
+    setTimeout: (callback) => { if (typeof callback === 'function') callback(); return 1 },
     __ModuleLoader__: {
       load({ id, factory }) {
         const mod = factory((request) => {
@@ -96,6 +165,8 @@ function run(stored) {
       },
     },
   }
+  globalThis.HTMLButtonElement = ButtonClass
+  globalThis.Element = ElementClass
   globalThis.document = {
     head: { appendChild: (tag) => styleTags.push(tag) },
     createElement: (tag) => ({ tag, dataset: {}, textContent: '', remove() {} }),
@@ -111,7 +182,15 @@ function run(stored) {
   const registered = calls
     .filter(([kind]) => kind === 'slots.register')
     .map(([, options, Component]) => ({ options, Component }))
-  return { calls, registered, styleText: styleTags.map((tag) => tag.textContent).join('\n') }
+  return {
+    calls, registered, styleText: styleTags.map((tag) => tag.textContent).join('\n'),
+    menuCalls, listeners, officialTrigger, ownButton, rowTarget, row, flush,
+  }
+}
+
+/** 构造一次会话行上的合成事件，供右键桥的逐次判定使用。 */
+function rowEvent(target, button = 2) {
+  return { button, target, preventDefault() { this.defaultPrevented = true }, stopPropagation() {} }
 }
 
 /**
@@ -152,15 +231,29 @@ if (!bundleConfig) throw new Error('没有注册到插件页配置插槽')
 if (bundleConfig.options.key !== 'dsh-session-row-actions') throw new Error('配置区块 key 应为本包名')
 if (bundleConfig.options.locale !== 'session-row-actions') throw new Error('配置区块没绑定 locale')
 
-// 官方触发器/官方条目必须被隐藏（改成自己渲染之后依赖这两条规则）
-if (!base.styleText.includes('> span > button{width:0')) throw new Error('没有隐藏官方「更多」触发器')
+// 官方触发器/官方条目必须被隐藏（改成自己渲染之后依赖这几条规则）
+if (!base.styleText.includes('> span > button:not([data-sra]){width:0')) throw new Error('没有隐藏旧版官方「更多」触发器')
+// 0.2.2+ 的官方触发器是 rowActions 的直接子按钮，旧规则匹配不到它。
+const hideRule = base.styleText
+  .split('\n')
+  .find((line) => line.includes('data-context-menu-trigger') && line.includes('display:none'))
+if (!hideRule) throw new Error('没有隐藏新版官方「更多」触发器')
+if (!hideRule.startsWith('[class*="sessionRow"] > [class*="rowActions"] > ')) {
+  throw new Error('新版隐藏规则应限定在会话行，避免影响工作区标题')
+}
 if (!base.styleText.includes('> button:not([data-sra]){display:none}')) throw new Error('没有隐藏官方插槽按钮')
 
-// 右键：contextmenu 压原生菜单 + mouseup 才点开
+// 右键：监听仍常驻以兼容旧版；但新版服务/新版 DOM 必须逐次让位官方。
 for (const type of ['contextmenu', 'mouseup']) {
   if (!base.calls.some(([kind, value]) => kind === 'window.addEventListener' && value === type)) {
     throw new Error(`没有挂载 window ${type} 监听`)
   }
+}
+const modernRightClick = rowEvent(base.rowTarget)
+base.listeners.get('contextmenu')(modernRightClick)
+base.listeners.get('mouseup')(modernRightClick)
+if (modernRightClick.defaultPrevented === true || base.menuCalls.some(([kind]) => kind === 'trigger.click')) {
+  throw new Error('新版右键应完全交给官方，插件不得 preventDefault 或模拟点击')
 }
 
 // ── 行按钮：默认只渲染「归档」「分叉」，顺序与默认 order 一致 ────────────────
@@ -311,4 +404,45 @@ const migratedLabels = migratedStrip.map((button) => button.props['aria-label'])
 if (!migratedLabels.includes('action.more')) throw new Error('v1 的 hideMore=false 应迁移为显示「更多」')
 if (migratedLabels.includes('action.archive')) throw new Error('v1 的 showArchive=false 应迁移为不显示「归档」')
 
-console.log('OK: 工厂 / 行插槽 / 固定「更多」/ 两个列表独立排序 / 勾选 / 权限 / v3、v2、v1 迁移 全部通过')
+// ── 场景 6：新版 contextMenus：更多按钮按坐标打开，动作按 id 执行 ──────────
+const modern = run({ menuOrder: ['more', 'archive', 'fork', 'pin', 'rename', 'copyId'], hoverOrder: ['archive', 'rename'], moreVisible: true }, { newDom: true })
+const modernButtons = flatten(modern.registered.find((entry) => entry.options.name === SLOT).Component({
+  sessionId: 's1', displayTitle: '会话一', useSessionAccess: () => true, t: (key) => key,
+}))[0].props.children.filter((child) => child && child.type === 'button')
+modernButtons[0].props.onClick({ currentTarget: modern.ownButton })
+if (!modern.menuCalls.some(([kind, target, point]) => kind === 'open'
+  && target.kind === 'session' && target.value.sessionId === 's1'
+  && target.value.displayTitle === '会话一' && point.x === 123 && point.y === 456)) {
+  throw new Error('新版「更多」应按本按钮坐标调用 contextMenus.open')
+}
+modernButtons[1].props.onClick({ currentTarget: modern.ownButton })
+await modern.flush()
+if (!modern.menuCalls.some(([kind, id]) => kind === 'select' && id === 'session.archive/archive')) {
+  throw new Error('新版「归档」应通过 contextMenus.resolve().select(id) 执行')
+}
+modernButtons[2].props.onClick({ currentTarget: modern.ownButton })
+await modern.flush()
+if (!modern.menuCalls.some(([kind, id]) => kind === 'select' && id === 'session.rename/rename')) {
+  throw new Error('新版「重命名」应通过官方菜单动作执行，而不是点 DOM 菜单项')
+}
+
+// ── 场景 7：服务尚未激活、但 DOM 已是新版：右键仍让位官方 ─────────────────
+const booting = run(undefined, { contextMenus: false, newDom: true })
+const bootingEvent = rowEvent(booting.rowTarget)
+booting.listeners.get('contextmenu')(bootingEvent)
+booting.listeners.get('mouseup')(bootingEvent)
+if (bootingEvent.defaultPrevented === true || booting.menuCalls.some(([kind]) => kind === 'trigger.click')) {
+  throw new Error('新版 DOM 不应被旧版右键桥接管（即使服务尚未激活）')
+}
+
+// ── 场景 8：旧版 DOM：右键仍由兼容桥打开官方菜单 ──────────────────────────
+const legacy = run(undefined, { contextMenus: false, newDom: false })
+const legacyEvent = rowEvent(legacy.rowTarget)
+Object.setPrototypeOf(legacyEvent.target, globalThis.Element.prototype)
+legacy.listeners.get('contextmenu')(legacyEvent)
+legacy.listeners.get('mouseup')(legacyEvent)
+if (!legacyEvent.defaultPrevented || !legacy.menuCalls.some(([kind]) => kind === 'trigger.click')) {
+  throw new Error('旧版右键仍应由兼容桥 preventDefault 并模拟点击')
+}
+
+console.log('OK: 工厂 / 行插槽 / 新旧官方触发器隐藏 / 官方菜单服务 / 右键让位 / 固定「更多」/ 两个列表独立排序 / 勾选 / 权限 / v3、v2、v1 迁移 全部通过')

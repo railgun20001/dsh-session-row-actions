@@ -5,7 +5,7 @@
 
 ```
 悬停一行会话  →   （…）  归档会话  分叉会话        ← 默认：只勾了「归档」「分叉」
-在行上右键    →   官方「…」菜单（置顶 / 重命名 / 分叉 / 归档 / 复制 Session ID）
+在行上右键    →   官方「…」菜单（0.2.2+ 原生支持，插件让位；旧版由插件兼容桥打开）
 ```
 
 ## 配置在哪
@@ -22,7 +22,8 @@
 要点：
 
 - **「更多（…）」位置固定**：永远排在悬浮列表第一行、也永远在悬浮条最前，不能拖动也不能移除，
-  只有勾选框控制显隐（单独存为 `moreVisible`）。它下面写明「在会话行上点右键也能打开菜单」。
+  只有勾选框控制显隐（单独存为 `moreVisible`）。它下面写明「在会话行上点右键也能打开菜单」；
+  0.2.2+ 这是官方原生能力，旧版由插件的兼容桥提供。
 - **两个列表的顺序互不干扰**：数据上各有各的数组（`hoverOrder` / `menuOrder`），
   拖动一个不会改动另一个。
 - 勾选时按 `menuOrder` 的相对位置插入 `hoverOrder` —— 所以菜单列表的顺序决定新勾选项
@@ -33,11 +34,12 @@
 
 | 需求 | 手段 | 为什么 |
 | --- | --- | --- |
-| 自定义这一排按钮 | 注入样式隐藏官方插槽条目（`> button:not([data-sra])`），由本插件按配置渲染整排 | 官方条目位置由各自 `order` 固定，无法按用户顺序重排，也无法把菜单项提升为按钮 |
-| 隐藏官方「更多」 | 把官方 Menu 触发器收成 0 宽、`pointer-events: none`，保留在流里 | 它是官方行组件自绘的，不是插槽条目；保留在流里是为了给菜单当锚点（右键与「更多」按钮都靠它定位） |
-| 右键打开菜单 | `window` 捕获 `mouseup`（button 2）→ 点官方触发器；`contextmenu` 只压原生菜单 | 实测真实右键的 `contextmenu` 在本应用页面里不一定送达；动作放 `mouseup` 还避开了「菜单刚弹出就被遮罩关掉」的竞态 |
-| 置顶 / 重命名 | 打开官方菜单 → 点对应条目（点之前给 `body` 打 `data-sra-busy`，把菜单临时设为透明） | `uiWorkspace` 只暴露分叉 / 归档 / 取消归档 / 打开会话，**没有**置顶和重命名；复用官方条目才能保留确认弹窗与行内重命名输入框 |
-| 分叉 / 归档 / 复制 ID | 直接调服务：`uiWorkspace.forkSession`、`archiveSession` / `unarchiveSession`、`navigator.clipboard` | 这些有公开契约，原生调用最稳；归档/取消归档按官方按钮文案判断当前方向 |
+| 自定义这一排按钮 | 注入样式隐藏官方插槽条目（`> :not(.sra-group)`），由本插件按配置渲染整排 | 官方条目位置由各自 `order` 固定，无法按用户顺序重排，也无法把菜单项提升为按钮；新版条目可能带 Tooltip 包裹层，不能只匹配 `> button` |
+| 隐藏官方「更多」 | 新版用 `[data-context-menu-trigger]` 直接隐藏（规则限定会话行，不影响工作区标题）；旧版仍把触发器收成 0 宽留在流里当锚点 | 0.2.2+ 的官方触发器是 `rowActions` 的直接子按钮，旧版 `> span > button` 规则匹配不到，导致「更多」重复出现 |
+| 右键打开菜单 | **0.2.2+ 完全交给官方**：会话行自带 `getTriggerProps(...).onContextMenu`；插件只在识别到旧版 DOM 时接管 | 官方已原生支持右键打开同一份菜单；插件的全局 `mouseup` 模拟点击反而会吞掉或重复打开菜单 |
+| 置顶 / 重命名 / 归档 | 优先 `ctx.contextMenus.resolve(target)` → 等 `ready` → 按官方动作 id `select()`；旧版回退 DOM 桥 / `uiWorkspace` | 新版菜单改为结构化贡献，按 DOM 下标点 `[role=menuitem]` 会因权限/分隔线错位；走服务能复用官方方向判断、确认弹窗与通知 |
+| 分叉 / 复制 ID | 直接调服务：`uiWorkspace.forkSession`、`navigator.clipboard` | 这些有公开契约，原生调用最稳；本插件保留「分叉后打开子会话」的既有行为 |
+| 本插件的「更多」 | `contextMenus.open(target, { x, y })` 按按钮下边缘定位；按钮也带 `data-context-menu-trigger` | 新版不再靠 0 宽官方触发器算锚点；带标记能让官方 Menu 把它认作合法外部触发器，弹出后不会被 outside 监听立刻关掉 |
 | 配置区块 | keyed 插槽 `plugins.bundle.config`，key = 本包名 | 官方插件管理页会在本插件详情页自动渲染该区块（判据 `ledger.bundles.has(pkg.name)`） |
 | 偏好存储 | localStorage `dsh-session-row-actions/prefs-v4`（`{ menuOrder, hoverOrder, moreVisible }`）+ 订阅广播 | 客户端模块插件拿不到宿主 Config；改完即时生效、无需重启。v3 / v2 / v1 的旧数据会自动迁移 |
 
@@ -57,17 +59,37 @@
 
 ```
 index.js    宿主半占位（apply 为空）
-client.js   客户端半：样式 / 右键 / 一排按钮 / 两个可拖拽列表
+client.js   客户端半：样式 / 新旧右键兼容 / 官方菜单服务 / 一排按钮 / 两个可拖拽列表
 cordis.patch.yml
 locale/{zh,en}.json
 icon.svg
-test/client-half-test.mjs   桩测试：node test/client-half-test.mjs
+test/client-half-test.mjs   桩测试：工厂 / 行插槽 / 配置页 / 新版菜单服务 / 右键让位 / 旧版兼容
 ```
 
 不 import 任何 Harness 客户端包：图标、按钮、列表、勾选框都自己写，只依赖
-`--dsw-alias-*` 主题令牌与 `data-slot` / `[role="menu"]` 这类稳定标记。
+`--dsw-alias-*` 主题令牌，以及 `data-slot` / `data-context-menu-trigger` 这类稳定
+DOM 标记与 `ctx.contextMenus` 服务。
 
-## 验证记录（2026-10-23）
+## 验证记录
+
+### 2026-11-13（DSH 0.2.2-rc.2）
+
+- 根源：新版会话行的官方「…」变成 `rowActions` 的直接子按钮，旧 CSS
+  `> span > button` 失效，于是出现两组「…」；旧版全局 `mouseup` 模拟点击还会
+  与官方新增的右键手势打架。
+- 对照当前安装版源码核对：`ui-workspace/src/client/rows/Rows.tsx`（行尾 DOM）、
+  `ui-context-menu/src/client/{trigger,Button,View,registry}.ts`（官方右键 / 结构化菜单）、
+  `ui-workspace/src/client/session-actions/context-menus.tsx`（动作 id）。
+- 真实浏览器用 `buildCss()` 生成的规则复验：新版官方触发器隐藏、官方插槽条目
+  （含 Tooltip 包裹层）隐藏、本插件按钮可见、旧版官方触发器收起、工作区标题
+  的「…」不受影响。
+- 自检 `npm test`：工厂 / 行插槽 / 新旧隐藏规则 / `contextMenus.open` 坐标 /
+  `resolve().select(id)` / 新版右键让位 / 服务未激活时的新版 DOM 让位 / 旧版右键
+  兼容 / 固定「更多」/ 两个列表独立排序 / 勾选 / 权限 / v3、v2、v1 迁移 全部通过。
+- 未做：当前 DSH Web 页面需要鉴权，未在真实插件页面里做肉眼验收；安装后建议在
+  侧栏悬停会话行、点本插件「…」、右键会话行各试一次。
+
+### 2026-10-23
 
 - 自检 `node test/client-half-test.mjs`：工厂 / 行插槽 / 插件页两个列表 / 勾选 /
   排序 / 分叉权限 / v1 迁移 全部通过。

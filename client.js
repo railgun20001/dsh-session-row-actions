@@ -23,16 +23,21 @@
  *
  * 官方那排按钮是插槽条目（`archive` / `pin`），位置由各自的 `order` 固定，
  * 无法按用户顺序重排，也无法把菜单项提升为按钮。所以这里用一条注入样式把
- * 官方条目隐藏（`> button:not([data-sra])`），再由本插件按配置渲染整排按钮。
+ * 官方条目隐藏（`> :not(.sra-group)`，兼容 Tooltip 包裹层），再由本插件按配置渲染整排按钮。
  *
- * ## 动作如何执行
+ * ## 动作如何执行（0.2.2+ 官方契约）
  *
- * `uiWorkspace` 只暴露了分叉 / 归档 / 取消归档 / 打开会话；**没有**置顶和重命名。
- * 因此：
- *   - 分叉、归档（按官方按钮文案判断归档还是取消归档）、复制 Session ID 走原生服务；
- *   - 置顶、重命名走「打开官方菜单 → 点对应条目」，完整复用官方行为（确认弹窗、
- *     行内重命名输入框）。打开的那一帧用 `body[data-sra-busy]` 把菜单设为透明，
- *     避免闪一下。
+ * 新版官方把会话行菜单改成 `ctx.contextMenus` 的结构化贡献，右键与「…」共用
+ * 同一个菜单；行尾「…」是带 `data-context-menu-trigger` 的直接子按钮。因此：
+ *   - 「更多」直接 `contextMenus.open({ kind:'session', value }, point)`，不再依赖
+ *     `display:none` 的官方触发器去算锚点（那样会退化为 (0,0)）；
+ *   - 置顶 / 重命名 / 归档用 `contextMenus.resolve(target)` 等 `ready` 后按动作 id
+ *     `select()`，完整复用官方方向判断、确认弹窗、通知与快捷键绑定；
+ *   - 分叉、复制 Session ID 继续走公开的 `uiWorkspace` / Clipboard，保留本插件
+ *     「分叉后打开子会话」的既有行为。
+ *
+ * 旧版 DSH 没有 `contextMenus` 服务：动作自动回退到「点官方菜单项 / 读官方按钮
+ * 文案」的 DOM 桥，右键也回退到 window 捕获的模拟点击官方「…」触发器。
  *
  * ## 契约与踩坑（违反任意一条整个页面都会起不来）
  *
@@ -66,14 +71,26 @@ window.__ModuleLoader__.load({
     const SLOT = 'sidebar.workspaces.session.row.action'
     /** 该插槽在 DOM 里的稳定标记（renderSlot 会写 `data-slot`）。 */
     const SLOT_SELECTOR = '[data-slot="sidebar.workspaces.session.row.action"]'
+    /** 会话行根元素的类名（CSS Modules 形如 `hIlkoa_sessionRow`，用子串匹配）。 */
+    const ROW_SELECTOR = '[class*="sessionRow"]'
     /** 整条按钮条的类名（CSS Modules 形如 `hIlkoa_rowActions`，用子串匹配）。 */
     const STRIP_SELECTOR = '[class*="rowActions"]'
+    /** 新版官方触发器的稳定标记（0.2.2+ 的 contextMenu.button 工厂写出）。 */
+    // 本插件给自己的「更多」按钮也打上该标记，让官方 Menu 把它视作外部触发器；
+    // 用 :not([data-sra]) 排除本插件按钮，避免把自己隐藏掉。
+    const CONTEXT_MENU_TRIGGER_SELECTOR = '[data-context-menu-trigger]:not([data-sra])'
     /** 插件管理详情页里「本插件自己的配置区块」插槽（keyed，key = 包名）。 */
     const BUNDLE_CONFIG_SLOT = 'plugins.bundle.config'
     /** 本插件在行按钮插槽里的单元格 id（与官方 id 不冲突）。 */
     const CELL_ID = 'sra-actions'
     /** 分叉需要的权限动作名，与官方菜单项判据一致。 */
     const FORK_ACTION = 'session/fork'
+    /** 官方结构化菜单贡献的 id → 动作 id（registry 会编码成 `<provider>/<action>`）。 */
+    const MENU_ACTIONS = {
+      pin: 'session.pin/pin',
+      rename: 'session.rename/rename',
+      archive: 'session.archive/archive',
+    }
     /**
      * 偏好存储键（v4）。
      *
@@ -299,17 +316,23 @@ window.__ModuleLoader__.load({
     /**
      * 生成注入到页面的样式表：隐藏官方触发器/官方条目 + 本插件控件与配置列表。
      *
-     * 官方「…」触发器收成 0 宽并设 `pointer-events:none`：它仍在文档流里、位置就是
-     * 行尾，右键和「更多」按钮都用 `.click()` 点它，官方菜单照常定位。
+     * 0.2.2+ 的官方「…」是 `rowActions` 的直接子按钮，带
+     * `[data-context-menu-trigger]`；旧版则包在 `> span > button` 里。两套规则
+     * 并存以兼容不同安装版本。新版菜单通过 `contextMenus.open(target, point)`
+     * 按坐标定位，不再需要把触发器收成 0 宽当锚点，可以直接 `display:none`。
+     * 旧版的 DOM 桥仍要靠隐藏的触发器算锚点，保留原来的 0 宽规则。
      *
      * @returns 一段 CSS 文本（偏好无关的部分；偏好相关的显隐由组件渲染时决定）。
      */
     function buildCss() {
       return [
-        /* ── 官方触发器与官方条目：隐藏但保留（触发器要当菜单锚点） ── */
-        `${STRIP_SELECTOR}:has(> ${SLOT_SELECTOR}) > span{width:0;overflow:hidden}`,
-        `${STRIP_SELECTOR}:has(> ${SLOT_SELECTOR}) > span > button{width:0;min-width:0;padding:0;margin:0;border:0;opacity:0;overflow:hidden;pointer-events:none}`,
-        `${SLOT_SELECTOR} > button:not([data-sra]){display:none}`,
+        /* ── 只处理会话行：新版官方触发器直接隐藏；旧版触发器收成 0 宽但留在流里 ── */
+        `${ROW_SELECTOR} > ${STRIP_SELECTOR} > ${CONTEXT_MENU_TRIGGER_SELECTOR}{display:none!important}`,
+        `${ROW_SELECTOR} > ${STRIP_SELECTOR}:has(> ${SLOT_SELECTOR}) > span{width:0;overflow:hidden}`,
+        `${ROW_SELECTOR} > ${STRIP_SELECTOR}:has(> ${SLOT_SELECTOR}) > span > button:not([data-sra]){width:0;min-width:0;padding:0;margin:0;border:0;opacity:0;overflow:hidden;pointer-events:none}`,
+        // 官方插槽条目可能带 Tooltip 包裹层，不能只隐藏直接 button；保留本插件的 .sra-group。
+        `${ROW_SELECTOR} ${SLOT_SELECTOR} > :not(.sra-group){display:none!important}`,
+        `${ROW_SELECTOR} ${SLOT_SELECTOR} > button:not([data-sra]){display:none}`,
         /* ── 本插件的一排按钮 ── */
         `.sra-group{display:inline-flex;align-items:center;gap:4px}`,
         `.sra-icon-button{box-sizing:border-box;width:16px;height:16px;flex:none;display:inline-flex;align-items:center;justify-content:center;padding:0;margin:0;border:none;background:transparent;border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-tertiary);cursor:pointer}`,
@@ -478,7 +501,9 @@ window.__ModuleLoader__.load({
     /**
      * 取会话行里官方「…」触发器。
      *
-     * 行内结构：`div.sessionRow > span.rowActions > [span(Menu anchor) > button, div[data-slot]]`。
+     * 行内结构（0.2.2+）：`div.sessionRow > span.rowActions >
+     * [button[data-context-menu-trigger], span.rowQuickActions > div[data-slot]]`；
+     * 旧版把触发器包在 `> span > button` 里。
      *
      * @param row - 会话行元素（可为 null）。
      * @returns 触发器按钮；找不到时返回 null。
@@ -487,8 +512,92 @@ window.__ModuleLoader__.load({
       if (row === null) return null
       const strip = row.querySelector(STRIP_SELECTOR)
       if (strip === null) return null
-      const trigger = strip.querySelector(':scope > span > button')
-      return trigger instanceof HTMLButtonElement ? trigger : null
+      const candidates = [
+        strip.querySelector(':scope > [data-context-menu-trigger]:not([data-sra])'),
+        strip.querySelector(':scope > span > button:not([data-sra])'),
+      ]
+      for (const trigger of candidates) {
+        if (trigger instanceof HTMLButtonElement) return trigger
+      }
+      return null
+    }
+
+    /**
+     * 构造官方右键菜单服务要求的会话目标。
+     *
+     * `displayTitle` 只用于菜单里展示；这里用插槽给的行标题，保证与右键捕获的
+     * 是同一个会话，且不依赖当前主视图选中的会话。
+     *
+     * @param sessionId - 会话 id。
+     * @param displayTitle - 行标题。
+     * @returns `contextMenus` 的 `session` 目标。
+     */
+    function sessionMenuTarget(sessionId, displayTitle) {
+      return { kind: 'session', value: { sessionId, displayTitle: displayTitle ?? '' } }
+    }
+
+    /**
+     * 用官方结构化菜单服务执行一个动作：解析贡献、等待就绪、按稳定 id 选择。
+     *
+     * `resolve()` 返回独立 occurrence，不会打开共享浮层，因此按钮执行动作时不会
+     * 闪出菜单；动作的方向判断、权限、确认弹窗、通知与快捷键绑定仍由官方负责。
+     * 找不到该 id（例如当前会话不可置顶）时返回 false，调用方据此什么也不做，避免误触同位置的其他菜单动作。
+     *
+     * @param ctx - 插件上下文。
+     * @param target - 会话目标。
+     * @param actionId - 形如 `session.rename/rename` 的动作 id。
+     * @returns 是否成功执行。
+     */
+    async function runOfficialMenuAction(ctx, target, actionId) {
+      const menus = ctx.get('contextMenus')
+      if (!menus || typeof menus.resolve !== 'function') return false
+      const resolution = menus.resolve(target)
+      if (!resolution || typeof resolution.select !== 'function') return false
+      let selected = false
+      try {
+        const actions = resolution.source?.getSnapshot?.() ?? []
+        if (actions.length > 0 && !actions.some((action) => action.id === actionId)) {
+          resolution.dispose?.()
+          return false
+        }
+        if (typeof resolution.ready?.then === 'function') await resolution.ready
+        selected = (resolution.source?.getSnapshot?.() ?? []).some((action) => action.id === actionId)
+        if (!selected) {
+          resolution.dispose?.()
+          return false
+        }
+        resolution.select(actionId)
+        return true
+      } catch (error) {
+        console.warn(`[${PKG}] 官方菜单动作执行失败：${actionId}`, error)
+        resolution.dispose?.()
+        return false
+      }
+    }
+
+    /**
+     * 打开官方「更多」菜单（新版按坐标定位，不再点击被隐藏的官方触发器）。
+     *
+     * 锚点取本插件「…」按钮的下边缘，与官方 `ContextMenuButton` 的几何一致；
+     * 旧版没有 `contextMenus.open()`，回退到点击被收成 0 宽的官方触发器。
+     *
+     * @param ctx - 插件上下文。
+     * @param target - 会话目标。
+     * @param button - 本插件的「更多」按钮。
+     * @param row - 当前会话行。
+     * @returns 是否已打开。
+     */
+    function openOfficialMenu(ctx, target, button, row) {
+      const menus = ctx.get('contextMenus')
+      if (menus && typeof menus.open === 'function') {
+        const rect = button.getBoundingClientRect()
+        menus.open(target, { x: rect.left, y: rect.bottom })
+        return true
+      }
+      const trigger = officialTriggerOf(row)
+      if (trigger === null) return false
+      trigger.click()
+      return true
     }
 
     /**
@@ -559,7 +668,7 @@ window.__ModuleLoader__.load({
      */
     function createRowActions(ctx, prefs) {
       return function SessionRowActions(props) {
-        const { sessionId, useSessionAccess, t } = props
+        const { sessionId, displayTitle, useSessionAccess, t } = props
         const translate = typeof t === 'function' ? t : (key) => (zh[key] ?? key)
         const snapshot = usePrefs(prefs)
         const [busy, setBusy] = react.useState(null)
@@ -579,10 +688,34 @@ window.__ModuleLoader__.load({
         const run = async (key, event) => {
           if (busy !== null) return
           setBusy(key)
+          const button = event.currentTarget
+          const row = button.closest(ROW_SELECTOR)
+          const target = sessionMenuTarget(sessionId, displayTitle)
           try {
-            const row = event.currentTarget.closest('[class*="sessionRow"]')
             if (key === 'more') {
-              officialTriggerOf(row)?.click()
+              openOfficialMenu(ctx, target, button, row)
+              return
+            }
+            if (key === 'pin' || key === 'rename' || key === 'archive') {
+              const menus = ctx.get('contextMenus')
+              if (menus && typeof menus.resolve === 'function') {
+                // 新版只走官方结构化动作。动作因权限/归档状态不可用时 resolve
+                // 里没有该 id，此时应当什么都不做；绝不能回退到「按 DOM 下标点
+                // 菜单项」，那会点中同位置的其他动作（如把置顶点成重命名）。
+                await runOfficialMenuAction(ctx, target, MENU_ACTIONS[key])
+                return
+              }
+              // 旧版没有 contextMenus：沿用 DOM 桥 / 公开服务。
+              if (key === 'archive') {
+                const uiWorkspace = ctx.get('uiWorkspace')
+                if (!uiWorkspace) throw new Error('会话服务不可用')
+                const label = officialButtonsOf(row)[0]?.getAttribute('aria-label') ?? ''
+                const unarchive = /取消归档|unarchive/i.test(label)
+                if (unarchive) await uiWorkspace.unarchiveSession(sessionId)
+                else await uiWorkspace.archiveSession(sessionId)
+                return
+              }
+              await clickOfficialMenuItem(row, key === 'pin' ? 0 : 1)
               return
             }
             if (key === 'fork') {
@@ -601,25 +734,9 @@ window.__ModuleLoader__.load({
               }
               return
             }
-            if (key === 'archive') {
-              const uiWorkspace = ctx.get('uiWorkspace')
-              if (!uiWorkspace) throw new Error('会话服务不可用')
-              const label = officialButtonsOf(row)[0]?.getAttribute('aria-label') ?? ''
-              const unarchive = /取消归档|unarchive/i.test(label)
-              if (unarchive) await uiWorkspace.unarchiveSession(sessionId)
-              else await uiWorkspace.archiveSession(sessionId)
-              return
-            }
             if (key === 'copyId') {
               await navigator.clipboard.writeText(sessionId)
               return
-            }
-            if (key === 'pin') {
-              await clickOfficialMenuItem(row, 0)
-              return
-            }
-            if (key === 'rename') {
-              await clickOfficialMenuItem(row, 1)
             }
           } catch (error) {
             console.warn(`[${PKG}] 会话行动作执行失败：${key}`, error)
@@ -640,6 +757,10 @@ window.__ModuleLoader__.load({
                 key,
                 type: 'button',
                 'data-sra': '',
+                // 本插件的「更多」替代了官方 ContextMenuButton；带上同样的标记后，
+                // 官方 Menu 的 isExternalTrigger 会把它认作合法触发器，菜单弹出
+                // 期间再次点击不会被 outside 监听当成「点空白」直接关掉。
+                ...(key === MORE_KEY ? { 'data-context-menu-trigger': '' } : {}),
                 className: 'sra-icon-button',
                 'aria-label': label,
                 title: label,
@@ -867,42 +988,65 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /* ───────────────────────── 右键打开官方菜单 ───────────────────────── */
+    /* ───────────────── 旧版右键兼容（新版官方已原生支持） ───────────────── */
 
     /**
-     * 从事件目标找到「该会话行的官方菜单触发器」。
+     * 判断一次右键手势是否该由官方菜单处理。
+     *
+     * 0.2.2+ 的会话行通过 `getTriggerProps(...).onContextMenu` 自己处理右键；
+     * 插件的 window 捕获监听若也 `preventDefault()` 并模拟点击，会吞掉或重复打开
+     * 官方菜单。服务可能比 immediately 插件晚激活，所以既看服务也看该行触发器
+     * 是否带新版 `[data-context-menu-trigger]` 标记；两者任一命中即完全让位。
+     *
+     * @param ctx - 插件上下文。
+     * @param target - 手势的事件目标。
+     * @returns 是否由官方菜单处理。
+     */
+    function usesOfficialContextMenu(ctx, target) {
+      const menus = ctx.get('contextMenus')
+      if (menus && typeof menus.open === 'function') return true
+      const trigger = findRowMenuTrigger(target)
+      return trigger !== null && trigger.matches('[data-context-menu-trigger]')
+    }
+
+    /**
+     * 从事件目标找到「该会话行的官方菜单触发器」（仅旧版桥使用）。
      *
      * @param target - 事件目标。
      * @returns 触发器按钮；不在会话行上时返回 null。
      */
     function findRowMenuTrigger(target) {
       if (!(target instanceof Element)) return null
-      const row = target.closest('[class*="sessionRow"]')
+      const row = target.closest(ROW_SELECTOR)
       if (row === null) return null
       if (row.querySelector(SLOT_SELECTOR) === null) return null
       return officialTriggerOf(row)
     }
 
     /**
-     * 压掉浏览器原生右键菜单（只处理会话行）。
+     * 压掉浏览器原生右键菜单（只处理会话行，仅旧版桥使用）。
      *
+     * @param ctx - 插件上下文。
      * @param event - contextmenu 事件。
      */
-    function suppressNativeMenu(event) {
+    function suppressNativeMenu(ctx, event) {
+      if (usesOfficialContextMenu(ctx, event.target)) return
       if (findRowMenuTrigger(event.target) === null) return
       event.preventDefault()
     }
 
     /**
-     * 右键松手时打开官方菜单。
+     * 右键松手时打开官方菜单（仅旧版桥使用）。
      *
      * 时序：右键序列是 `mousedown → contextmenu → mouseup`。在 mouseup 才真正点击，
      * 菜单不会在遮罩出现后被随后的 mouseup 立刻关掉（表现为“右键没反应”）。
      *
+     * @param ctx - 插件上下文。
      * @param event - mouseup 事件。
      */
-    function openMenuOnRightUp(event) {
+    function openMenuOnRightUp(ctx, event) {
       if (event.button !== 2) return
+      if (usesOfficialContextMenu(ctx, event.target)) return
       const trigger = findRowMenuTrigger(event.target)
       if (trigger === null) return
       event.preventDefault()
@@ -911,10 +1055,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 插件入口：文案、样式、右键、行按钮、插件页配置区块。
+     * 插件入口：文案、样式、旧版右键兼容、行按钮、插件页配置区块。
      *
      * 每一项都单独 try/catch：任何一环失败只丢那一项，绝不让 apply 抛错
      * （apply 抛错 = `web boot: 1 entry did not activate` = 整个窗口起不来）。
+     * 右键监听只在识别到旧版 DOM 时接管；新版右键与「…」共用官方 `contextMenus`。
      *
      * @param ctx - 插件上下文。
      */
@@ -940,16 +1085,18 @@ window.__ModuleLoader__.load({
       }
 
       try {
+        // 常驻监听但逐次判定：新版服务和新版 DOM 任一命中都完全让位官方；
+        // 服务晚于 immediately 插件激活时也不会误挂旧版模拟点击。
         ctx.effect(() => {
-          const onContextMenu = (event) => suppressNativeMenu(event)
-          const onMouseUp = (event) => openMenuOnRightUp(event)
+          const onContextMenu = (event) => suppressNativeMenu(ctx, event)
+          const onMouseUp = (event) => openMenuOnRightUp(ctx, event)
           window.addEventListener('contextmenu', onContextMenu, true)
           window.addEventListener('mouseup', onMouseUp, true)
           return () => {
             window.removeEventListener('contextmenu', onContextMenu, true)
             window.removeEventListener('mouseup', onMouseUp, true)
           }
-        }, `${PKG}: 右键菜单`)
+        }, `${PKG}: 旧版右键菜单兼容`)
       } catch (error) {
         console.error(`[${PKG}] 右键菜单挂载失败`, error)
       }
